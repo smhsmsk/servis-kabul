@@ -1,0 +1,331 @@
+name: APK derle
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Android projesini hazirla
+        run: |
+          set -e
+          if [ ! -f index.html ]; then echo "HATA: depoda index.html yok. Once index.html dosyasini yukle."; exit 1; fi
+          P=_proje
+          rm -rf $P
+          mkdir -p $P/app/src/main/java/tr/derinservis/kabul $P/app/src/main/assets $P/app/src/main/res/values $P/app/src/main/res/drawable $P/app/src/main/res/mipmap-anydpi-v26
+          cp index.html $P/app/src/main/assets/index.html
+          cat > $P/settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "DerinKabulFormu"
+          include ':app'
+          EOF
+          cat > $P/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF
+          cat > $P/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=false
+          android.nonTransitiveRClass=true
+          EOF
+          cat > $P/app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'tr.derinservis.kabul'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "tr.derinservis.kabul"
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+          }
+          EOF
+          cat > $P/app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <application
+                  android:allowBackup="false"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:supportsRtl="false"
+                  android:theme="@style/AppTheme">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density|fontScale|uiMode"
+                      android:exported="true"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          cat > $P/app/src/main/java/tr/derinservis/kabul/MainActivity.java <<'EOF'
+          package tr.derinservis.kabul;
+
+          import android.app.Activity;
+          import android.content.Context;
+          import android.content.SharedPreferences;
+          import android.graphics.Color;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.print.PrintAttributes;
+          import android.print.PrintDocumentAdapter;
+          import android.print.PrintManager;
+          import android.view.View;
+          import android.view.Window;
+          import android.view.WindowInsets;
+          import android.view.WindowInsetsController;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          /**
+           * Derin Teknik Servis - Cihaz Kabul Formu.
+           * Formun kendisi assets/index.html dosyasidir. Bu sinif onu tam ekran bir WebView icinde acar.
+           * Sayfa tarafindaki "Tam ekran" dugmesi ve "Yazdir" dugmesi asagidaki AndroidApp koprusunu kullanir.
+           */
+          public class MainActivity extends Activity {
+
+              private WebView web;
+              private SharedPreferences prefs;
+              private volatile boolean full = true;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  prefs = getSharedPreferences("ayar", MODE_PRIVATE);
+                  full = prefs.getBoolean("tamekran", true);
+
+                  web = new WebView(this);
+                  web.setBackgroundColor(Color.WHITE);
+                  setContentView(web);
+
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  s.setAllowFileAccess(false);
+                  s.setAllowContentAccess(false);
+                  s.setSupportZoom(false);
+                  s.setBuiltInZoomControls(false);
+                  s.setTextZoom(100);
+
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                          String u = request.getUrl().toString();
+                          return !u.startsWith("file:///android_asset/");
+                      }
+                  });
+                  web.setWebChromeClient(new WebChromeClient());
+                  web.addJavascriptInterface(new Bridge(), "AndroidApp");
+
+                  applyFullscreen();
+                  web.loadUrl("file:///android_asset/index.html");
+              }
+
+              private void applyFullscreen() {
+                  Window w = getWindow();
+                  if (Build.VERSION.SDK_INT >= 30) {
+                      w.setDecorFitsSystemWindows(!full);
+                      WindowInsetsController c = w.getInsetsController();
+                      if (c != null) {
+                          if (full) {
+                              c.hide(WindowInsets.Type.systemBars());
+                              c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                          } else {
+                              c.show(WindowInsets.Type.systemBars());
+                          }
+                      }
+                  } else {
+                      int flags = View.SYSTEM_UI_FLAG_VISIBLE;
+                      if (full) {
+                          flags = View.SYSTEM_UI_FLAG_FULLSCREEN
+                                  | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                  | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                  | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                                  | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                  | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+                      }
+                      w.getDecorView().setSystemUiVisibility(flags);
+                  }
+              }
+
+              @Override
+              public void onWindowFocusChanged(boolean hasFocus) {
+                  super.onWindowFocusChanged(hasFocus);
+                  if (hasFocus) applyFullscreen();
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (web != null && web.canGoBack()) {
+                      web.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+
+              @Override
+              protected void onDestroy() {
+                  if (web != null) {
+                      web.destroy();
+                      web = null;
+                  }
+                  super.onDestroy();
+              }
+
+              /** Sayfadan window.AndroidApp.* olarak cagrilir. */
+              private class Bridge {
+                  @JavascriptInterface
+                  public boolean isFullscreen() {
+                      return full;
+                  }
+
+                  @JavascriptInterface
+                  public void toggleFullscreen() {
+                      runOnUiThread(new Runnable() {
+                          @Override
+                          public void run() {
+                              full = !full;
+                              prefs.edit().putBoolean("tamekran", full).apply();
+                              applyFullscreen();
+                          }
+                      });
+                  }
+
+                  @JavascriptInterface
+                  public void print() {
+                      runOnUiThread(new Runnable() {
+                          @Override
+                          public void run() {
+                              if (web == null) return;
+                              PrintManager pm = (PrintManager) getSystemService(Context.PRINT_SERVICE);
+                              PrintDocumentAdapter adapter = web.createPrintDocumentAdapter("Cihaz_Kabul_Formu");
+                              PrintAttributes attrs = new PrintAttributes.Builder()
+                                      .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
+                                      .build();
+                              pm.print("Cihaz Kabul Formu", adapter, attrs);
+                          }
+                      });
+                  }
+              }
+          }
+          EOF
+          cat > $P/app/src/main/res/values/strings.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Kabul Formu</string>
+          </resources>
+          EOF
+          cat > $P/app/src/main/res/values/colors.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ikon_arka">#0A6A76</color>
+          </resources>
+          EOF
+          cat > $P/app/src/main/res/values/styles.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar" />
+          </resources>
+          EOF
+          cat > $P/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ikon_arka" />
+              <foreground android:drawable="@drawable/ic_foreground" />
+          </adaptive-icon>
+          EOF
+          cat > $P/app/src/main/res/drawable/ic_foreground.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <!-- beyaz form kagidi -->
+              <path
+                  android:fillColor="#FFFFFF"
+                  android:pathData="M38,28 L70,28 Q74,28 74,32 L74,76 Q74,80 70,80 L38,80 Q34,80 34,76 L34,32 Q34,28 38,28 Z" />
+              <!-- satirlar -->
+              <path
+                  android:fillColor="#0A6A76"
+                  android:pathData="M40,38 L68,38 L68,41 L40,41 Z" />
+              <path
+                  android:fillColor="#0A6A76"
+                  android:pathData="M40,47 L68,47 L68,50 L40,50 Z" />
+              <path
+                  android:fillColor="#0A6A76"
+                  android:pathData="M40,56 L58,56 L58,59 L40,59 Z" />
+              <!-- onay isareti -->
+              <path
+                  android:fillColor="#00000000"
+                  android:strokeColor="#0A6A76"
+                  android:strokeWidth="3.5"
+                  android:strokeLineCap="round"
+                  android:strokeLineJoin="round"
+                  android:pathData="M42,69 L47,74 L58,65" />
+          </vector>
+          EOF
+
+      - name: APK derle
+        working-directory: _proje
+        run: gradle assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kabul-Formu-APK
+          path: _proje/app/build/outputs/apk/debug/app-debug.apk
